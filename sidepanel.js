@@ -65,6 +65,7 @@ let modelSelectMeasureCanvas = null;
 let streamSlowNoticeTimer = 0;
 let streamFirstTokenReceived = false;
 let initCompleted = false;
+let presetErrorText = "";
 
 init().catch((err) => {
   resetConversationView(`初始化失败：${escapeHtml(err?.message || err)}`);
@@ -145,8 +146,8 @@ function bindEvents() {
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (
       (areaName === "sync" &&
-        (changes.aiProviders || changes.aiSystemPrompt || changes.aiInitialQuickPrompts || changes.aiPresetPrompts)) ||
-      (areaName === "local" && changes.aiProviderKeys)
+        (changes.aiProviders || changes.aiSystemPrompt || changes.aiInitialQuickPrompts)) ||
+      (areaName === "local" && (changes.aiProviderKeys || changes.aiPresetPrompts))
     ) {
       void refreshProvidersAndPrefsAfterExternalChange();
     }
@@ -499,8 +500,11 @@ function renderPresetPrompts() {
     return;
   }
   const prompts = Array.isArray(aiPrefs.aiPresetPrompts) ? aiPrefs.aiPresetPrompts : [];
+  const errorHtml = presetErrorText
+    ? `<span class="sp-msg-error">${escapeHtml(presetErrorText)}</span>`
+    : "";
   if (!prompts.length) {
-    els.presetList.innerHTML = '<span class="sp-preset-empty">还没有预设提示词</span>';
+    els.presetList.innerHTML = `<span class="sp-preset-empty">还没有预设提示词</span>${errorHtml}`;
     return;
   }
   els.presetList.innerHTML = prompts
@@ -510,7 +514,7 @@ function renderPresetPrompts() {
         <button type="button" class="sp-preset-remove" data-index="${index}" aria-label="删除预设提示词">×</button>
       </span>
     `)
-    .join("");
+    .join("") + errorHtml;
   els.presetList.querySelectorAll(".sp-preset-chip").forEach((btn) => {
     btn.addEventListener("click", () => {
       const index = Number(btn.getAttribute("data-index") || -1);
@@ -862,12 +866,19 @@ async function addPresetPrompt() {
   if (!text) {
     return;
   }
-  const nextPrompts = [...(aiPrefs.aiPresetPrompts || [])];
-  if (!nextPrompts.includes(text)) {
-    nextPrompts.push(text);
+  const previousPrompts = [...(aiPrefs.aiPresetPrompts || [])];
+  aiPrefs.aiPresetPrompts = previousPrompts.includes(text)
+    ? previousPrompts
+    : [...previousPrompts, text].slice(0, 12);
+  const result = await persistAiPresetPrompts();
+  if (!result.ok) {
+    // 保存失败必须回滚内存列表：否则界面显示"添加成功"，重开面板又从存储读回旧值
+    aiPrefs.aiPresetPrompts = previousPrompts;
+    presetErrorText = `保存失败：${result.error}`;
+    renderPresetPrompts();
+    return;
   }
-  aiPrefs.aiPresetPrompts = nextPrompts.slice(0, 12);
-  await persistAiPresetPrompts();
+  presetErrorText = "";
   els.presetInput.value = "";
   renderPresetPrompts();
 }
@@ -876,21 +887,35 @@ async function removePresetPrompt(index) {
   if (index < 0) {
     return;
   }
-  aiPrefs.aiPresetPrompts = (aiPrefs.aiPresetPrompts || []).filter((_, itemIndex) => itemIndex !== index);
-  await persistAiPresetPrompts();
+  const previousPrompts = [...(aiPrefs.aiPresetPrompts || [])];
+  aiPrefs.aiPresetPrompts = previousPrompts.filter((_, itemIndex) => itemIndex !== index);
+  const result = await persistAiPresetPrompts();
+  if (!result.ok) {
+    aiPrefs.aiPresetPrompts = previousPrompts;
+    presetErrorText = `保存失败：${result.error}`;
+  } else {
+    presetErrorText = "";
+  }
   renderPresetPrompts();
 }
 
 async function persistAiPresetPrompts() {
   const settingsResp = await sendRuntimeMessage({ type: "get-settings" }).catch(() => ({ ok: false }));
   if (!settingsResp?.ok || !settingsResp.settings) {
-    return;
+    return { ok: false, error: "读取当前设置失败" };
   }
   const nextSettings = {
     ...settingsResp.settings,
     aiPresetPrompts: (aiPrefs.aiPresetPrompts || []).slice(0, 12)
   };
-  await sendRuntimeMessage({ type: "save-settings", settings: nextSettings }).catch(() => null);
+  const resp = await sendRuntimeMessage({ type: "save-settings", settings: nextSettings }).catch((error) => ({
+    ok: false,
+    error: error?.message || String(error || "保存失败")
+  }));
+  if (!resp?.ok) {
+    return { ok: false, error: resp?.error || "保存失败" };
+  }
+  return { ok: true, error: "" };
 }
 
 function updateSidepanelLayoutState() {

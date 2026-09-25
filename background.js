@@ -22,9 +22,13 @@ const DEFAULT_AI_SYSTEM_PROMPT = [
 
 const DEFAULT_SYNC_SETTINGS = {
   aiSystemPrompt: DEFAULT_AI_SYSTEM_PROMPT,
-  aiInitialQuickPrompts: DEFAULT_INITIAL_QUICK_PROMPTS.slice(),
-  aiPresetPrompts: DEFAULT_PRESET_PROMPTS.slice()
+  aiInitialQuickPrompts: DEFAULT_INITIAL_QUICK_PROMPTS.slice()
 };
+
+// 预设提示词不再放 sync：sync 对「单个条目」有 8192 字节硬上限，
+// 而整个预设数组是作为一个条目存储的，用户的提示词模板动辄上千字，
+// 几条就会超限，导致 sync.set 整条被拒绝、预设静默丢失。改存 local（10MB，无单条上限）。
+const AI_PRESET_PROMPTS_STORAGE = "aiPresetPrompts";
 
 // ===== AI 平台存储 =====
 
@@ -171,23 +175,51 @@ async function initializeSettingsStorage() {
   await chrome.storage.sync.set({ ...DEFAULT_SYNC_SETTINGS, ...syncCurrent });
 }
 
+async function loadAiPresetPrompts() {
+  const localData = await chrome.storage.local.get([AI_PRESET_PROMPTS_STORAGE]).catch(() => ({}));
+  if (Array.isArray(localData?.[AI_PRESET_PROMPTS_STORAGE])) {
+    return normalizeAiPresetPrompts(localData[AI_PRESET_PROMPTS_STORAGE]);
+  }
+  // 历史数据迁移：旧版本把预设提示词存在 sync 里，这里读一次搬到 local。
+  // 旧 sync 值保留不动（get+set 不会删除它），万一迁移写入失败下次仍可再迁。
+  const legacy = await chrome.storage.sync.get([AI_PRESET_PROMPTS_STORAGE]).catch(() => ({}));
+  const migrated = Array.isArray(legacy?.[AI_PRESET_PROMPTS_STORAGE])
+    ? normalizeAiPresetPrompts(legacy[AI_PRESET_PROMPTS_STORAGE])
+    : DEFAULT_PRESET_PROMPTS.slice();
+  await chrome.storage.local.set({ [AI_PRESET_PROMPTS_STORAGE]: migrated }).catch(() => {});
+  return migrated;
+}
+
 async function getMergedSettings() {
-  const syncSettings = await chrome.storage.sync.get(DEFAULT_SYNC_SETTINGS);
+  const [syncSettings, aiPresetPrompts] = await Promise.all([
+    chrome.storage.sync.get(DEFAULT_SYNC_SETTINGS),
+    loadAiPresetPrompts()
+  ]);
   const merged = { ...DEFAULT_SYNC_SETTINGS, ...syncSettings };
   merged.aiSystemPrompt = normalizeAiSystemPrompt(merged.aiSystemPrompt);
   merged.aiInitialQuickPrompts = normalizeAiInitialQuickPrompts(merged.aiInitialQuickPrompts);
-  merged.aiPresetPrompts = normalizeAiPresetPrompts(merged.aiPresetPrompts);
+  merged.aiPresetPrompts = aiPresetPrompts;
   return merged;
 }
 
 async function saveSettings(settings) {
   const payload = settings && typeof settings === "object" ? settings : {};
-  const syncPayload = {
-    aiSystemPrompt: normalizeAiSystemPrompt(payload.aiSystemPrompt),
-    aiInitialQuickPrompts: normalizeAiInitialQuickPrompts(payload.aiInitialQuickPrompts),
-    aiPresetPrompts: normalizeAiPresetPrompts(payload.aiPresetPrompts)
-  };
-  await chrome.storage.sync.set(syncPayload);
+  const tasks = [
+    chrome.storage.sync.set({
+      aiSystemPrompt: normalizeAiSystemPrompt(payload.aiSystemPrompt),
+      aiInitialQuickPrompts: normalizeAiInitialQuickPrompts(payload.aiInitialQuickPrompts)
+    })
+  ];
+  // 预设提示词写 local；并且只在调用方显式传数组时才覆盖：
+  // 设置页保存时不带这个字段，旧实现会把它归一化成 [] 写回去，从而把预设清空。
+  if (Array.isArray(payload.aiPresetPrompts)) {
+    tasks.push(
+      chrome.storage.local.set({
+        [AI_PRESET_PROMPTS_STORAGE]: normalizeAiPresetPrompts(payload.aiPresetPrompts)
+      })
+    );
+  }
+  await Promise.all(tasks);
 }
 
 // ===== 文章上下文 =====
