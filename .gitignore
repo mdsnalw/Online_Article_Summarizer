@@ -1,0 +1,15 @@
+# AI 助手工作目录（含本地会话/工作日志，禁止提交）
+.workbuddy/
+.workbuddy-ai/
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# 打包产物
+*.zip
+*.crx
+*.pem
