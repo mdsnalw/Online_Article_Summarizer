@@ -336,6 +336,8 @@ body {
   margin-bottom: 0;
 }
 
+.sp-msg-assistant h1,
+.sp-msg-assistant h2,
 .sp-msg-assistant h3,
 .sp-msg-assistant h4,
 .sp-msg-assistant h5 {
@@ -344,6 +346,8 @@ body {
   line-height: 1.4;
 }
 
+.sp-msg-assistant h1 { font-size: 17px; }
+.sp-msg-assistant h2 { font-size: 16px; }
 .sp-msg-assistant h3 { font-size: 15px; }
 .sp-msg-assistant h4 { font-size: 14px; }
 .sp-msg-assistant h5 { font-size: 14px; }

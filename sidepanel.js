@@ -1524,7 +1524,6 @@ function renderAssistantMessage(node, raw, { userPrompt = "" } = {}) {
   }
   node.innerHTML = "";
   const cleanedRaw = stripThinkBlocks(raw);
-  const pasteReadyRaw = normalizeMarkdownForSectionPaste(cleanedRaw);
 
   const content = document.createElement("div");
   content.className = "sp-msg-assistant-body";
@@ -1546,7 +1545,7 @@ function renderAssistantMessage(node, raw, { userPrompt = "" } = {}) {
   `;
   copyBtn.addEventListener("click", async () => {
     try {
-      await navigator.clipboard.writeText(pasteReadyRaw);
+      await navigator.clipboard.writeText(cleanedRaw);
       copyBtn.disabled = true;
       window.setTimeout(() => {
         copyBtn.disabled = false;
@@ -1777,7 +1776,7 @@ function renderMarkdown(text) {
     if (heading) {
       flushPara();
       closeList();
-      const level = heading[1].length + 2;
+      const level = Math.min(6, Math.max(1, heading[1].length));
       out.push(`<h${level}>${renderInline(heading[2])}</h${level}>`);
       continue;
     }
