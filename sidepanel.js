@@ -335,7 +335,22 @@ async function loadContextState({ forceRefresh = false, silent = false } = {}) {
 function applyContextPayload(payload) {
   const nextContext = payload && typeof payload === "object" ? payload : null;
   const nextKey = buildContextKey(nextContext);
-  const contextChanged = Boolean(currentContextKey && nextKey && nextKey !== currentContextKey);
+  const nextVersionKey = buildContextKey(nextContext, { includeContent: true });
+  const currentKey = buildContextKey(contextData);
+  const currentVersionKey = buildContextKey(contextData, { includeContent: true });
+  // 版本键 = 绑定键 + "#正文指纹"，两者不等说明该侧确实提取到了正文。
+  // 只有新旧两侧都提取到正文时才比较内容版本：抓取失败 / 非文章页不带指纹，
+  // 不参与内容变更判定，避免把已有对话误判为"内容变更"而清空。
+  const canCompareContent = nextVersionKey !== nextKey && currentVersionKey !== currentKey;
+  // 两种变更都算上下文变更：① 换了文章（URL 变）② 同一 URL 下正文内容变了（正文指纹变）
+  const urlChanged = Boolean(currentContextKey && nextKey && nextKey !== currentContextKey);
+  const contentChanged = Boolean(
+    !urlChanged &&
+    currentContextKey &&
+    canCompareContent &&
+    nextVersionKey !== currentVersionKey
+  );
+  const contextChanged = urlChanged || contentChanged;
 
   contextData = nextContext;
   currentContextKey = nextKey;
@@ -349,12 +364,43 @@ function applyContextPayload(payload) {
   return contextChanged;
 }
 
-function buildContextKey(payload) {
+// 正文指纹：长度 + FNV-1a 32 位轻量哈希，用于识别"同一 URL 下正文内容是否已变更"。
+// 仅在需要做内容变更判定时使用，不影响对话绑定键与历史匹配逻辑。
+const CONTENT_FINGERPRINT_VERSION = "v1";
+
+function buildContentHash(text) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+function buildContextFingerprint(payload) {
+  const markdown = String(payload?.articleMarkdown || "");
+  if (!markdown) {
+    return "";
+  }
+  return `${CONTENT_FINGERPRINT_VERSION}-${markdown.length}-${buildContentHash(markdown)}`;
+}
+
+// 上下文键。默认只含 URL（对话绑定 / 历史匹配用）；
+// includeContent=true 时追加正文指纹，用于识别同一页面正文是否已更新。
+function buildContextKey(payload, { includeContent = false } = {}) {
   if (!payload) {
     return "";
   }
   const normalizedUrl = normalizeContextUrlForKey(payload.url);
-  return normalizedUrl ? `url:${normalizedUrl}` : "";
+  if (!normalizedUrl) {
+    return "";
+  }
+  const baseKey = `url:${normalizedUrl}`;
+  if (!includeContent) {
+    return baseKey;
+  }
+  const fingerprint = buildContextFingerprint(payload);
+  return fingerprint ? `${baseKey}#${fingerprint}` : baseKey;
 }
 
 function normalizeContextUrlForKey(value) {
@@ -384,8 +430,9 @@ function updateContextChip() {
   els.contextChip.textContent = shortTitle;
   const mismatch = isBoundConversationMismatched();
   els.contextChip.classList.toggle("is-mismatch", mismatch);
+  const fingerprint = buildContextFingerprint(contextData);
   els.contextChip.title = contextData.url
-    ? `${contextData.title || ""}${mismatch ? "\n当前页不是这个对话绑定的文章" : ""}\n点击跳转目标文章，或开启新对话`
+    ? `${contextData.title || ""}${mismatch ? "\n当前页不是这个对话绑定的文章" : ""}${fingerprint ? `\n正文指纹 ${fingerprint}` : ""}\n点击跳转目标文章，或开启新对话`
     : contextData.title || "";
   els.contextChip.disabled = !String(contextData.url || "").trim();
 }
